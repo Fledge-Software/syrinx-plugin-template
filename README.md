@@ -146,7 +146,9 @@ become the wiki page `Background-10`).
    Keep its refusal tests (tampered package, undeclared methods, foreign origin,
    denied and revoked capabilities), which test the host's rules. The package
    folder is found from your manifest's id and version, so that needs no change.
-   Run `cargo xtask check`; when it passes, your plugin builds, its package is
+   Run `cargo fmt --all` (renaming changes line lengths, and the check
+   refuses unformatted code), then `cargo xtask check`; when it passes, your
+   plugin builds, its package is
    valid, and the test host can load and drive it.
 6. Use example values only: `example.com`, `.test` and `.invalid` addresses and
    made-up names. Never put real personal data, keys or tokens in the

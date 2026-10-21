@@ -349,44 +349,87 @@ fn is_version(version: &str) -> bool {
 mod tests {
     use super::*;
 
-    const TEMPLATE: &str = include_str!("../../syrinx-plugin.toml");
+    /// A synthetic manifest, independent of the repository's own, so these
+    /// tests keep passing when an author renames the plugin.
+    const FIXTURE: &str = r#"
+schema = 1
+
+[plugin]
+id = "sample"
+name = "Sample"
+version = "1.2.3"
+description = "A synthetic manifest for tests."
+authors = ["Test Author <author@example.invalid>"]
+repository = "https://example.invalid/sample"
+licence = "MPL-2.0"
+min-syrinx = "0.9.0"
+
+[interface]
+world = "syrinx:plugin/plugin@0.1.0"
+
+[entry]
+module = "plugin.wasm"
+ui = "ui/"
+activation = ["on-command"]
+
+[[contributes.commands]]
+id = "sample.act"
+title = "Act"
+form = true
+
+[[contributes.tab-types]]
+id = "sample.panel"
+title = "Panel"
+ui-methods = ["list-items"]
+"#;
 
     fn with(find: &str, replace: &str) -> Result<Manifest, ManifestError> {
-        assert!(TEMPLATE.contains(find), "fixture text {find:?} is missing");
-        Manifest::parse(&TEMPLATE.replacen(find, replace, 1))
+        assert!(FIXTURE.contains(find), "fixture text {find:?} is missing");
+        Manifest::parse(&FIXTURE.replacen(find, replace, 1))
     }
 
+    /// The repository's own manifest parses, and so does its commented
+    /// example request once uncommented. Names no ids, so renaming is safe.
     #[test]
-    fn the_template_manifest_is_valid_and_requests_nothing() {
-        let manifest = Manifest::parse(TEMPLATE).expect("template manifest");
-        assert_eq!(manifest.plugin.id, "hello");
-        assert_eq!(manifest.world_version(), "0.1.0");
-        assert!(manifest.capabilities.is_empty());
-        assert!(manifest.command("hello.greet").is_some_and(|c| c.form));
-        assert!(manifest.tab_type("hello.greetings").is_some());
-    }
-
-    #[test]
-    fn the_commented_storage_request_is_valid_once_uncommented() {
-        let uncommented = TEMPLATE
+    fn the_repository_manifest_and_its_commented_request_are_valid() {
+        let own = include_str!("../../syrinx-plugin.toml");
+        Manifest::parse(own).expect("syrinx-plugin.toml is valid");
+        let uncommented = own
             .replace("# [[capabilities]]", "[[capabilities]]")
             .replace("# kind = ", "kind = ")
             .replace("# reason = ", "reason = ")
             .replace("# required = ", "required = ");
-        let manifest = Manifest::parse(&uncommented).expect("manifest with storage");
-        assert!(manifest.requests("storage"));
+        Manifest::parse(&uncommented).expect("the commented request is valid");
+    }
+
+    #[test]
+    fn the_fixture_parses_and_finds_its_declarations() {
+        let manifest = Manifest::parse(FIXTURE).expect("fixture manifest");
+        assert_eq!(manifest.plugin.id, "sample");
+        assert_eq!(manifest.world_version(), "0.1.0");
+        assert!(manifest.capabilities.is_empty());
+        assert!(manifest.command("sample.act").is_some_and(|c| c.form));
+        assert!(manifest.tab_type("sample.panel").is_some());
+        let with_storage = format!(
+            "{FIXTURE}\n[[capabilities]]\nkind = \"storage\"\nreason = \"Remember things.\"\nrequired = false\n"
+        );
+        assert!(
+            Manifest::parse(&with_storage)
+                .expect("storage")
+                .requests("storage")
+        );
     }
 
     #[test]
     fn a_command_without_the_plugin_prefix_is_refused() {
-        let error = with("id = \"hello.greet\"", "id = \"other.greet\"").unwrap_err();
+        let error = with("id = \"sample.act\"", "id = \"other.act\"").unwrap_err();
         assert!(matches!(error, ManifestError::WrongPrefix { .. }));
     }
 
     #[test]
     fn a_duplicate_contributed_id_is_refused() {
-        let error = with("id = \"hello.greetings\"", "id = \"hello.greet\"").unwrap_err();
-        assert_eq!(error, ManifestError::DuplicateId("hello.greet".into()));
+        let error = with("id = \"sample.panel\"", "id = \"sample.act\"").unwrap_err();
+        assert_eq!(error, ManifestError::DuplicateId("sample.act".into()));
     }
 
     #[test]
@@ -403,7 +446,7 @@ mod tests {
 
     #[test]
     fn a_capability_without_a_reason_or_full_trust_is_refused() {
-        let base = format!("{TEMPLATE}\n[[capabilities]]\nkind = \"terminal\"\nrequired = true\n");
+        let base = format!("{FIXTURE}\n[[capabilities]]\nkind = \"terminal\"\nrequired = true\n");
         let missing = Manifest::parse(&format!("{base}reason = \" \"\n")).unwrap_err();
         assert_eq!(missing, ManifestError::MissingReason("terminal".into()));
         let undeclared = Manifest::parse(&format!("{base}reason = \"Run tests.\"\n")).unwrap_err();
