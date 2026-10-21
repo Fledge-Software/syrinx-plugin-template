@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 //! The plugin's own logic, kept apart from the WIT glue so unit tests run without Syrinx.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
 use serde::Serialize;
 
@@ -65,6 +65,8 @@ pub struct Greeter {
     greetings: Vec<Greeting>,
     open_views: BTreeSet<u64>,
     submissions: BTreeMap<String, Outcome>,
+    /// Submission ids oldest first, so the oldest is forgotten first.
+    submission_order: VecDeque<String>,
 }
 
 impl Greeter {
@@ -74,6 +76,7 @@ impl Greeter {
             greetings: Vec::new(),
             open_views: BTreeSet::new(),
             submissions: BTreeMap::new(),
+            submission_order: VecDeque::new(),
         }
     }
 
@@ -83,8 +86,16 @@ impl Greeter {
         if !granted.iter().any(|kind| kind == "storage") {
             return Ok(());
         }
-        let stored = host.settings_get(LAST_NAME_KEY)?;
-        self.last_name = stored.and_then(|bytes| String::from_utf8(bytes).ok());
+        let Some(bytes) = host.settings_get(LAST_NAME_KEY)? else {
+            return Ok(());
+        };
+        match String::from_utf8(bytes) {
+            Ok(name) => self.last_name = Some(name),
+            Err(_) => host.log(
+                LogLevel::Warn,
+                "the remembered name is not UTF-8; ignoring it",
+            ),
+        }
         Ok(())
     }
 
@@ -210,9 +221,13 @@ impl Greeter {
         self.last_name = Some(name.to_owned());
         match host.settings_set(LAST_NAME_KEY, name.as_bytes()) {
             Ok(()) => {}
-            Err(PluginError::Denied(_) | PluginError::Revoked(_)) => host.log(
+            Err(PluginError::Denied(_)) => host.log(
                 LogLevel::Info,
                 "storage is not granted, so the name is kept only until Syrinx closes",
+            ),
+            Err(PluginError::Revoked(_)) => host.log(
+                LogLevel::Info,
+                "storage was revoked, so the name is kept only until Syrinx closes",
             ),
             Err(_) => host.log(LogLevel::Warn, "could not remember the name"),
         }
@@ -247,9 +262,12 @@ impl Greeter {
     }
 
     fn remember_submission(&mut self, submission_id: &str, outcome: &Outcome) {
-        if self.submissions.len() == MAX_REMEMBERED_SUBMISSIONS {
-            self.submissions.pop_first();
+        if self.submission_order.len() == MAX_REMEMBERED_SUBMISSIONS
+            && let Some(oldest) = self.submission_order.pop_front()
+        {
+            self.submissions.remove(&oldest);
         }
+        self.submission_order.push_back(submission_id.to_owned());
         self.submissions
             .insert(submission_id.to_owned(), outcome.clone());
     }
@@ -602,6 +620,51 @@ mod tests {
     fn a_view_of_another_kind_is_refused() {
         let host = FakeHost::default();
         assert!(Greeter::new().view_opened(&host, 1, "hello.other").is_err());
+    }
+
+    #[test]
+    fn the_oldest_submission_id_is_forgotten_first() {
+        let host = FakeHost::default();
+        let mut greeter = Greeter::new();
+        // "s-9" sorts after "s-10", so key order would wrongly evict "s-10".
+        let ids: Vec<String> = (0..MAX_REMEMBERED_SUBMISSIONS + 1)
+            .map(|index| format!("s-{}", index + 9))
+            .collect();
+        for id in &ids {
+            greeter.submit(&host, GREET_COMMAND, id, &values("Ada", "hi", "false"));
+        }
+        let before = greeter.greetings().len();
+        let newest = ids.last().expect("ids");
+        greeter.submit(&host, GREET_COMMAND, newest, &values("Ada", "hi", "false"));
+        assert_eq!(
+            greeter.greetings().len(),
+            before,
+            "the newest id is still remembered"
+        );
+        greeter.submit(&host, GREET_COMMAND, &ids[0], &values("Ada", "hi", "false"));
+        assert_eq!(
+            greeter.greetings().len(),
+            before + 1,
+            "the oldest id was forgotten"
+        );
+    }
+
+    #[test]
+    fn a_remembered_name_that_is_not_utf8_is_reported_and_ignored() {
+        let host = FakeHost {
+            storage_granted: true,
+            ..FakeHost::default()
+        };
+        host.settings
+            .borrow_mut()
+            .insert(LAST_NAME_KEY.into(), vec![0xff, 0xfe]);
+        let mut greeter = Greeter::new();
+        greeter
+            .activate(&host, &["storage".into()])
+            .expect("activate");
+        assert!(host.logs.borrow()[0].contains("not UTF-8"));
+        let form = greeter.form_for(GREET_COMMAND).expect("form");
+        assert_eq!(form.fields[0].initial, None);
     }
 
     #[test]
