@@ -1,0 +1,148 @@
+// SPDX-License-Identifier: MPL-2.0
+//
+// The contract between Syrinx and every plugin: the `syrinx:plugin` world.
+// Copied from the draft in Syrinx's research note 10 (approved 2026-10-21);
+// every change from that draft is listed in docs/wit-changes.md.
+
+package syrinx:plugin@0.1.0;
+
+/// Shared value types. Ids are validated by the host: dot-separated lowercase
+/// ASCII segments, at most a fixed length (bounds set in #28).
+interface types {
+    type command-id = string;          // e.g. "notes.new-note"; must start with the plugin id
+    type request-id = u64;             // host-allocated, never reused across view or controller lifetimes
+    type view-instance = u64;
+    type timestamp = s64;              // Unix milliseconds
+
+    variant plugin-error {
+        invalid-input(string),
+        not-found(string),
+        denied(string),                // a capability the owner has not granted; names it
+        revoked(string),               // a capability the owner withdrew while in use
+        unavailable(string),           // a dependency is unavailable; retry may help
+        internal(string),              // shown to the owner, never logged with owner data
+    }
+
+    /// Plan 2: a timeout is not proof a write was reversed.
+    variant outcome {
+        done(option<string>),
+        failed(plugin-error),
+        uncertain(string),             // reached the service, completion unknown; never resubmitted
+    }
+
+    enum icon { plugin, document, person, folder, terminal, search, star, warning }
+}
+
+/// What every plugin may ask of Syrinx. Capability interfaces are separate.
+interface host {
+    use types.{plugin-error, request-id, view-instance, timestamp};
+    enum log-level { debug, info, warn, error }
+    log: func(level: log-level, message: string);              // bounded; development builds only
+    settings-get: func(key: string) -> result<option<list<u8>>, plugin-error>;
+    settings-set: func(key: string, value: list<u8>) -> result<_, plugin-error>;
+    open-view: func(kind: string, address: string) -> result<view-instance, plugin-error>;
+    set-view-metadata: func(view: view-instance, title: string, badge: option<string>)
+        -> result<_, plugin-error>;
+    /// An event to the view's own interface (section 4). Never reaches a page web view.
+    post-view-event: func(view: view-instance, topic: string, json: string) -> result<_, plugin-error>;
+    feed-changed: func(feed: string);                           // the host pulls later
+    @unstable(feature = home-widgets)
+    widget-changed: func(widget: string);
+    cancel: func(request: request-id);
+    now: func() -> timestamp;
+}
+
+// Capability interfaces (imports), designed in #28 and the plugin slices:
+// documents, watch, drafts, open-external (Notes); parse, terminal, git, lsp (Forge).
+
+interface lifecycle {
+    use types.{plugin-error};
+    record activation { host-version: string, granted: list<string> }
+    activate: func(info: activation) -> result<_, plugin-error>;   // on first use; epoch-bounded
+    deactivate: func();                                             // best effort; also bounded
+}
+
+interface commands {
+    use types.{command-id, plugin-error};
+    run: func(id: command-id) -> result<_, plugin-error>;          // declared in the manifest
+}
+
+/// Declarative forms, drawn by GPUI in the palette's preview pane.
+interface forms {
+    use types.{command-id, plugin-error, request-id, outcome};
+    variant field-kind {
+        text(text-options), multiline(text-options), number(number-options),
+        money(string), choice(list<choice-option>), toggle,
+    }
+    record text-options { max-length: u32, placeholder: option<string> }
+    record number-options { min: option<f64>, max: option<f64>, step: option<f64> }
+    record choice-option { value: string, label: string }
+    record field { name: string, label: string, kind: field-kind, required: bool, initial: option<string> }
+    record form-spec { title: string, fields: list<field>, submit-label: string }
+    record field-value { name: string, value: string }
+    record field-error { name: string, message: string }
+    variant submit-result {
+        finished(outcome),
+        pending(request-id),           // outcome arrives through events.deliver
+        invalid(list<field-error>),    // no effect; input stays, first failing field focused
+    }
+    form-for: func(id: command-id) -> result<form-spec, plugin-error>;
+    validate: func(id: command-id, values: list<field-value>) -> list<field-error>;
+    /// The host supplies submission-id so a repeated Enter cannot duplicate (P2-05).
+    submit: func(id: command-id, submission-id: string, values: list<field-value>) -> submit-result;
+}
+
+/// Plugin tab views: HTML and JavaScript in a plugin view (section 4).
+interface views {
+    use types.{view-instance, request-id, plugin-error};
+    record view-request { view: view-instance, request-id: request-id, method: string, json: string }
+    opened: func(view: view-instance, kind: string, address: string) -> result<_, plugin-error>;
+    /// A request from the view's interface, already checked by the host.
+    message: func(req: view-request) -> result<string, plugin-error>;
+    closed: func(view: view-instance);                             // drop subscriptions (P2-06)
+}
+
+/// Pull-based search feeds, declared in the manifest. The host owns cursors and commits.
+interface search-feed {
+    use types.{plugin-error, icon, timestamp};
+    record catalogue-entry { id: string, revision: u64, title: string, subtitle: string,
+                             icon: icon, last-used: option<timestamp> }
+    record document { id: string, revision: u64, title: string, body: string }
+    variant change { upsert-entry(catalogue-entry), upsert-document(document), delete(string), reset }
+    record batch { changes: list<change>, next-cursor: string, more: bool }
+    changes: func(feed: string, after: option<string>, max: u32) -> result<batch, plugin-error>;
+    resolve: func(feed: string, id: string) -> result<string, plugin-error>;   // an address for open-view
+}
+
+interface events {
+    use types.{request-id, outcome};
+    deliver: func(request: request-id, outcome: outcome);
+}
+
+@unstable(feature = home-widgets)
+interface widgets {
+    @unstable(feature = home-widgets)
+    use types.{plugin-error, icon};
+    @unstable(feature = home-widgets)
+    record stat { label: string, value: string, trend: option<string> }
+    @unstable(feature = home-widgets)
+    record list-item { title: string, subtitle: option<string>, icon: icon, target: option<string> }
+    @unstable(feature = home-widgets)
+    variant widget-body { stat(stat), items(list<list-item>), message(string) }
+    @unstable(feature = home-widgets)
+    snapshot: func(widget: string, width: u8, height: u8) -> result<widget-body, plugin-error>;
+}
+
+world plugin {
+    import types;
+    import host;
+    export lifecycle;
+    export commands;
+    export forms;
+    export views;
+    export search-feed;
+    export events;
+    // `widgets` is not exported in 0.1.0: wasmtime 48's `bindgen!` resolves
+    // every feature, so a gated export would be required of every plugin.
+    // See docs/wit-changes.md.
+}

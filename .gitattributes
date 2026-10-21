@@ -1,0 +1,5 @@
+# SPDX-License-Identifier: MPL-2.0
+# Package files are hashed byte for byte, so keep LF everywhere (Windows
+# checkouts would otherwise hash CRLF copies differently).
+* text=auto eol=lf
+*.wasm binary
