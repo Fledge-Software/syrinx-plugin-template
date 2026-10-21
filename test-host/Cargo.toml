@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MPL-2.0
+[package]
+name = "plugin-test-host"
+version = "0.1.0"
+description = "A small stand-in for Syrinx's plugin host, used only by the contract tests."
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+plugin-format.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+wasmtime.workspace = true
+wasmtime-wasi.workspace = true
+
+[lints]
+workspace = true
