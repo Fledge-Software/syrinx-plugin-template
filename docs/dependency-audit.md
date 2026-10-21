@@ -133,7 +133,13 @@ BSD-2-Clause), and the cases below.
 - **`tokio` 1.54.0** arrives through `wasmtime-wasi` (features `rt`,
   `rt-multi-thread`, `net`, `io-util`, `sync`, `time` and others). It is not in
   Syrinx's lockfile today, so Syrinx's own wasmtime audit (#27, #28) will meet it
-  too. It is never started here; the test host is synchronous.
+  too. It is never started here; the test host is synchronous. tokio
+  (tokio-rs, MIT) releases often, with patch releases on several supported
+  lines at once (1.54.0 on 2026-10-19; 1.53.3 and 1.51.6 on 2026-10-13). RustSec
+  lists five tokio advisories (RUSTSEC-2021-0072, 2021-0124, 2023-0001,
+  2023-0005 and 2025-0023), all patched before 1.45; none affects 1.54.0, and
+  `cargo audit` agrees. A fuller review belongs to Syrinx's own wasmtime audit
+  in #27 and #28.
 
 ## Crates not already in Syrinx's lockfile (74)
 

@@ -62,8 +62,11 @@ A plugin can contribute three kinds of thing:
 Why WebAssembly rather than an ordinary Rust library loaded into Syrinx? A
 library would run with all of Syrinx's power and could read every file the
 owner can. The owner decided on 2026-10-15 that every plugin, the built-in
-ones included, runs sandboxed from the start; research note 10 (Syrinx-app's
-wiki, `Background-10`) explains the choice of runtime and every rule below.
+ones included, runs sandboxed from the start; research note 10 explains the
+choice of runtime and every rule below. It is in Syrinx-app at
+[`docs/dev/background-10-wasm-plugin-runtime-draft.md`](https://github.com/Fledge-Software/Syrinx-app/blob/main/docs/dev/background-10-wasm-plugin-runtime-draft.md)
+(⚠️ the link resolves once that file is on Syrinx-app's `main`; it will also
+become the wiki page `Background-10`).
 
 ## Words used here
 
@@ -90,6 +93,20 @@ wiki, `Background-10`) explains the choice of runtime and every rule below.
   different kind of web view from the page tabs that show the web.
 - **Bridge**: the message channel between a plugin view's JavaScript and the
   plugin's module, through Syrinx, which checks every message.
+- **The owner**: the person who uses Syrinx on their own computer and decides
+  what each plugin may do. Not the plugin's author: as an author you *ask*;
+  the owner *grants*.
+- **WebView2**: Microsoft's embedded Edge browser, which Syrinx uses for page
+  tabs and plugin views.
+- **Origin**: the scheme, host and port a web page comes from, such as
+  `https://syrinx-plugin.hello.invalid`. Browsers keep different origins' pages
+  and storage apart, and Syrinx checks a message's origin before trusting it.
+- **CSP** (Content Security Policy): a list a server sends with a page that
+  says where the page may load scripts, styles, images and data from; the
+  browser blocks everything else.
+- **Nonce**: a random value made fresh for each page load. A CSP can allow
+  only the style elements that carry it, which is how Syrinx's editor may add
+  styles while injected ones are blocked.
 - **Trap**: an unrecoverable stop inside the guest (a panic, running out of time
   or memory). Syrinx discards a trapped instance and starts a fresh one on next use.
 
@@ -105,12 +122,31 @@ wiki, `Background-10`) explains the choice of runtime and every rule below.
    - `syrinx-plugin.toml`: `id`, `name`, `description`, `authors`,
      `repository`, and every contributed id (`hello.greet` becomes
      `pomodoro.start`; contributed ids must start with the plugin id).
-   - `plugin/Cargo.toml`: the package `name`, and the `PLUGIN_PACKAGE` and
-     `PLUGIN_ARTIFACT` constants in `xtask/src/assemble.rs` to match.
+   - `plugin/Cargo.toml`: the package `name` (for example `pomodoro-plugin`).
+     The build tool reads the name from this file, so nothing in `xtask/`
+     changes.
    - `plugin/src/greeter.rs`: the command and tab ids at the top.
-4. Replace the logic in `plugin/src/greeter.rs` and the tab in `ui/`. Keep
-   `plugin/src/lib.rs` as the thin layer that hands each WIT export to your logic.
-5. Run `cargo xtask check`. When it passes, your plugin builds, its package is
+   - `ui/index.html`: the title and the text that names "Say hello".
+4. Refresh `Cargo.lock` for the new package name and commit it:
+
+   ```
+   cargo update --workspace
+   ```
+
+   This rewrites only the workspace's own entries. **Never run a bare
+   `cargo update`**: it moves every dependency to its newest compatible
+   version, including `unicode-ident`, which is held at 1.0.26 because that is
+   the version the owner approved; the licence check then fails. Every cargo
+   call in `cargo xtask` uses `--locked`, so a stale lockfile stops the build
+   with "cannot update the lock file" rather than changing it silently.
+5. Replace the logic in `plugin/src/greeter.rs` and the tab in `ui/`. Keep
+   `plugin/src/lib.rs` as the thin layer that hands each WIT export to your
+   logic. Then rewrite `test-host/tests/contract.rs` for your plugin: its `GREET`
+   constant, the form values and the Hello-specific assertions describe Hello.
+   Keep its refusal tests (tampered package, undeclared methods, foreign origin,
+   denied and revoked capabilities), which test the host's rules. The package
+   folder is found from your manifest's id and version, so that needs no change.
+   Run `cargo xtask check`; when it passes, your plugin builds, its package is
    valid, and the test host can load and drive it.
 6. Use example values only: `example.com`, `.test` and `.invalid` addresses and
    made-up names. Never put real personal data, keys or tokens in the
@@ -118,9 +154,18 @@ wiki, `Background-10`) explains the choice of runtime and every rule below.
 
 ## Building and testing
 
-You need Rust (the exact toolchain in `rust-toolchain.toml`; `rustup` installs
-it, with the `wasm32-wasip2` target, the first time you build), Node.js 20 or
-later for the interface's tests, and, only for releases, Python 3 and `openssl`.
+You need:
+
+- **Rust through [rustup](https://rustup.rs)**. The exact toolchain, with the
+  `wasm32-wasip2` target, rustfmt and Clippy, is named in `rust-toolchain.toml`;
+  `rustup toolchain install` in this folder installs it explicitly, as CI does,
+  and rustup otherwise installs it on the first build.
+- **[Node.js](https://nodejs.org) 20 or later**, for the interface's tests.
+- **Python 3 and `openssl`**, only to sign releases.
+
+The first build downloads about 220 crates from crates.io and compiles
+wasmtime for the test host, which takes several minutes (about 3 on a 4-core
+machine); later builds take seconds.
 
 The build tool is a Rust program in `xtask/`, run through a cargo alias
 (`.cargo/config.toml`). It was chosen over a `justfile` or a shell script so the
@@ -130,7 +175,7 @@ same commands work on Windows and Linux with nothing but Rust installed.
 |---|---|
 | `cargo xtask build` | Builds `plugin.wasm` for `wasm32-wasip2` and assembles the package folder `dist/hello-0.1.0/` with its file list |
 | `cargo xtask test` | Builds, then runs the unit tests, the contract tests and the bridge's JavaScript tests |
-| `cargo xtask check` | Everything CI runs: `cargo fmt --check`, Clippy with warnings denied (native and `wasm32-wasip2`), the UI rules, the licence check, the build and all tests |
+| `cargo xtask check` | `cargo fmt --check`, Clippy with warnings denied (native and `wasm32-wasip2`), the UI rules, the licence check, the build and all tests: what CI runs, except the reproducibility build, the signature self-test and the Windows build |
 | `cargo xtask licences` | Checks every crate in `Cargo.lock` against `licences.toml` |
 | `cargo xtask repro` | Builds twice, from two copies of the source in different folders, and requires identical bytes |
 | `cargo xtask check-tag v0.1.0` | Refuses a release tag that is not `v` plus the manifest's version |
@@ -196,8 +241,9 @@ design approved in note 10, not yet built in Syrinx):
 - **At first use**, an optional capability is asked for only after the owner's
   own action, such as a click. A folder is always chosen by the owner in the
   Windows folder picker; a plugin never names a path.
-- **At any time**, the owner can revoke a grant. Calls then return `revoked` or
-  `denied`, and the plugin must carry on.
+- **At any time**, the owner can revoke a grant. Later calls return `revoked`
+  (a capability that was never granted returns `denied`), and the plugin must
+  carry on.
 - **An update that asks for more** is held inactive, with the old version still
   running, until the owner accepts the difference.
 
@@ -277,6 +323,7 @@ view; `ui/bridge.js` is the plugin's own helper. Messages are JSON envelopes:
 ```json
 { "v": 1, "kind": "request", "id": 42, "method": "list-greetings", "body": {} }
 { "v": 1, "kind": "response", "id": 42, "ok": true, "body": { "greetings": [] } }
+{ "v": 1, "kind": "response", "id": 42, "ok": false, "error": { "kind": "not-found", "message": "…" } }
 { "v": 1, "kind": "event", "topic": "greeting-added", "body": { "text": "Hello, Ada!", "at": 0 } }
 { "v": 1, "kind": "cancel", "id": 42 }
 ```
@@ -346,7 +393,8 @@ file <sha256> <size> plugin.wasm
 It has exactly one valid byte form (LF line endings, single spaces, files
 sorted by path), and the reader re-renders what it parsed and requires the same
 bytes, so two readers can never see different contents in one signed file.
-Paths must be safe on Windows: ASCII letters, digits, `.`, `_` and `-` only, no
+Paths must be safe on Windows: components separated by `/`, each made of ASCII
+letters, digits, `.`, `_` and `-` only, no
 `..`, no `:` (alternate data streams), no device names like `CON`, and no two
 paths that differ only in letter case. Syrinx installs the folder only if the
 signature verifies, every listed file matches its size and hash, and no other
@@ -406,7 +454,9 @@ the owner accepted for Syrinx's own release key on 2026-10-14.
 
 **Attestation** records, signed by GitHub through Sigstore, that `plugin.wasm`
 and the zip were built by this repository's release workflow at the tagged
-commit. Anyone can check it before installing:
+commit. Because the attest step runs inline in `release.yml`, this reaches SLSA
+Build Level 2; note 10 suggests moving it into a reusable workflow for Level 3,
+which is left for later. Anyone can check it before installing:
 
 ```
 gh attestation verify syrinx-plugin-hello-0.1.0.zip -R <owner>/<repository>
