@@ -1,0 +1,85 @@
+/* SPDX-License-Identifier: MPL-2.0 */
+/* The Greetings tab's look: Syrinx's dark theme with its default accent. */
+
+:root {
+  color-scheme: dark;
+  --background: #17171a;
+  --surface: #222227;
+  --text: #ececf1;
+  --muted: #a0a0ab;
+  --accent: #ff8a65;
+  font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+  padding: 2rem 1.5rem;
+}
+
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+h1 {
+  margin: 0;
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+button {
+  border: 1px solid var(--accent);
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--accent);
+  padding: 0.4rem 0.9rem;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:disabled {
+  border-color: var(--muted);
+  color: var(--muted);
+  cursor: default;
+}
+
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+#status,
+#empty {
+  color: var(--muted);
+}
+
+ol {
+  list-style: none;
+  margin: 1rem 0 0;
+  padding: 0;
+  display: grid;
+  gap: 0.5rem;
+}
+
+li {
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  background: var(--surface);
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+}
+
+time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}

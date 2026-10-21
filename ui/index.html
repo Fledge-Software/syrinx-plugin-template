@@ -1,0 +1,28 @@
+<!doctype html>
+<!-- SPDX-License-Identifier: MPL-2.0 -->
+<!-- The Greetings tab: drawn by Syrinx in this plugin's own view, never in a page tab. -->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <!-- Syrinx sends a stricter policy as a header (with a per-load style nonce);
+       this copy only lets a local preview fail the same way. A meta policy can
+       add restrictions, never remove the header's. -->
+  <meta http-equiv="Content-Security-Policy"
+        content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; frame-src 'none'; child-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Greetings</title>
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="app.js"></script>
+</head>
+<body>
+  <main>
+    <header>
+      <h1>Greetings</h1>
+      <button type="button" id="clear" disabled>Clear</button>
+    </header>
+    <p id="status" role="status">Connecting to the plugin…</p>
+    <ol id="greetings" aria-label="Greetings, newest first"></ol>
+    <p id="empty" hidden>No greetings yet. Open the palette (Ctrl K) and choose “Say hello”.</p>
+  </main>
+</body>
+</html>
