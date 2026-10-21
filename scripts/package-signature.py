@@ -25,7 +25,6 @@ temporary folder and deleted when the test ends.
 """
 
 import hashlib
-import os
 import shutil
 import subprocess
 import sys

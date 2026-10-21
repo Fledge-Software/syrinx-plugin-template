@@ -18,7 +18,7 @@ usage: cargo xtask <task>
 
   build        build plugin.wasm and assemble dist/<id>-<version>/ with its file list
   test         build, then run the unit and contract tests
-  check        everything CI runs: format, Clippy, UI rules, licences, build, tests
+  check        format, Clippy, UI rules, licences, build and tests (CI also runs repro)
   licences     check every crate's licence against licences.toml
   repro        build twice in two different folders and compare the bytes
   check-tag T  refuse unless tag T equals v<version> from syrinx-plugin.toml
@@ -94,19 +94,21 @@ fn test() -> Result<(), String> {
     )
 }
 
-/// Everything CI's `ci.yml` runs, in the same order, except the reproducibility build.
+/// What CI's `ci.yml` runs, in the same order, except the reproducibility build,
+/// the signature self-test and the Windows build.
 fn check() -> Result<(), String> {
     let root = workspace_root();
     let deny_warnings = ["--", "-D", "warnings"];
     process::cargo(&root, &["fmt", "--all", "--check"], &[])?;
     let native = ["clippy", "--workspace", "--all-targets", "--locked"];
     process::cargo(&root, &[&native[..], &deny_warnings].concat(), &[])?;
+    let plugin = assemble::PluginCrate::locate(&root)?;
     let wasm = [
         "clippy",
         "-p",
-        "hello-plugin",
+        plugin.name.as_str(),
         "--target",
-        "wasm32-wasip2",
+        assemble::TARGET,
         "--locked",
     ];
     process::cargo(&root, &[&wasm[..], &deny_warnings].concat(), &[])?;
