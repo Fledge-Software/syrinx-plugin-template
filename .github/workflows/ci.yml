@@ -1,0 +1,87 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# Builds and tests the plugin on every push and pull request, and is reused by
+# release.yml so a release runs exactly these checks first. Every third-party
+# action is pinned by full commit SHA (the tag is in the comment); moving a
+# pin is a reviewed change. See README.md, "Continuous integration".
+
+name: ci
+
+on:
+  push:
+    branches: ["**"]   # tags run CI through release.yml instead
+  pull_request:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Build, test, licences and reproducibility
+    runs-on: ubuntu-24.04
+    outputs:
+      wasm-sha256: ${{ steps.digest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # rust-toolchain.toml names the exact toolchain, wasm32-wasip2, rustfmt and clippy.
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      # Format, Clippy (native and wasm32-wasip2), UI rules, licences, the
+      # package build, unit tests, contract tests and the bridge's tests.
+      - name: cargo xtask check
+        run: cargo xtask check
+
+      - name: Signature format self-test (throwaway key, deleted after)
+        run: python3 -I scripts/package-signature.py self-test
+
+      # Two clean builds from two different folders must give the same bytes.
+      - name: cargo xtask repro
+        run: cargo xtask repro
+
+      - name: Record the plugin.wasm digest
+        id: digest
+        run: echo "sha256=$(sha256sum dist/*/plugin.wasm | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+  windows-build:
+    name: Build on Windows (reproducibility across systems)
+    runs-on: windows-2025
+    outputs:
+      wasm-sha256: ${{ steps.digest.outputs.sha256 }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+      - name: cargo xtask build
+        run: cargo xtask build
+      - name: Record the plugin.wasm digest
+        id: digest
+        shell: bash
+        run: echo "sha256=$(sha256sum dist/*/plugin.wasm | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+
+  # Whether a Windows and a Linux build give identical bytes is not yet
+  # confirmed (research note 10, section 5). Until it is, a difference is
+  # reported as a warning, not a failure; make it fail once it has held.
+  compare-systems:
+    name: Compare Linux and Windows builds
+    needs: [check, windows-build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Compare plugin.wasm digests
+        env:
+          LINUX: ${{ needs.check.outputs.wasm-sha256 }}
+          WINDOWS: ${{ needs.windows-build.outputs.wasm-sha256 }}
+        run: |
+          echo "Linux:   $LINUX" | tee -a "$GITHUB_STEP_SUMMARY"
+          echo "Windows: $WINDOWS" | tee -a "$GITHUB_STEP_SUMMARY"
+          if [ "$LINUX" = "$WINDOWS" ]; then
+            echo "plugin.wasm is identical on both systems." | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::warning::plugin.wasm differs between Linux and Windows builds"
+          fi

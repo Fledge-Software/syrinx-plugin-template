@@ -1,0 +1,102 @@
+# SPDX-License-Identifier: MPL-2.0
+#
+# On a version tag (v0.1.0): run CI, then build the package, sign its file
+# list, zip it, write SHA256SUMS, attest provenance and publish a GitHub
+# release. Nothing else triggers it. See README.md, "Releasing and signing".
+#
+# Needs one repository secret, created by the owner outside any agent session:
+#   SYRINX_PLUGIN_SIGNING_KEY  an ECDSA P-256 private key in PEM form.
+# Without it the release stops; there are no unsigned releases.
+
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  release:
+    name: Package, sign, attest and publish
+    needs: ci
+    runs-on: ubuntu-24.04
+    # A GitHub environment lets the owner require an approval before signing.
+    environment: release
+    permissions:
+      contents: write       # create the release
+      id-token: write       # sign the attestation through Sigstore
+      attestations: write   # store the attestation
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install the pinned Rust toolchain
+        run: rustup toolchain install
+
+      - name: Refuse a tag that is not the manifest version
+        run: cargo xtask check-tag "$GITHUB_REF_NAME"
+
+      - name: Build the package folder
+        run: cargo xtask build
+
+      - name: Name the package
+        id: names
+        run: |
+          folder=$(basename dist/*/)
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+          echo "zip=syrinx-plugin-$folder.zip" >> "$GITHUB_OUTPUT"
+
+      # The key is written to a private temporary file only for this step.
+      - name: Sign the file list
+        env:
+          SIGNING_KEY: ${{ secrets.SYRINX_PLUGIN_SIGNING_KEY }}
+          FOLDER: dist/${{ steps.names.outputs.folder }}
+        run: |
+          if [ -z "$SIGNING_KEY" ]; then
+            echo "::error::The SYRINX_PLUGIN_SIGNING_KEY secret is not set; refusing an unsigned release."
+            exit 1
+          fi
+          umask 077
+          key="$RUNNER_TEMP/signing-key.pem"
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$SIGNING_KEY" > "$key"
+          python3 -I scripts/package-signature.py sign "$FOLDER" "$key"
+          openssl pkey -in "$key" -pubout -out "$RUNNER_TEMP/signing-key.pub.pem"
+          python3 -I scripts/package-signature.py verify "$FOLDER" "$RUNNER_TEMP/signing-key.pub.pem"
+          echo "KEY_ID=$(python3 -I scripts/package-signature.py key-id "$RUNNER_TEMP/signing-key.pub.pem")" >> "$GITHUB_ENV"
+
+      # The zip is transport only: Syrinx installs from the extracted folder.
+      - name: Zip the folder and write SHA256SUMS
+        env:
+          FOLDER: ${{ steps.names.outputs.folder }}
+          ZIP: ${{ steps.names.outputs.zip }}
+        run: |
+          epoch=$(git log -1 --format=%ct)
+          find "dist/$FOLDER" -exec touch -d "@$epoch" {} +
+          (cd dist && find "$FOLDER" -type f | LC_ALL=C sort | zip -X -@ "../$ZIP")
+          sha256sum "dist/$FOLDER/plugin.wasm" "$ZIP" > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: |
+            dist/${{ steps.names.outputs.folder }}/plugin.wasm
+            ${{ steps.names.outputs.zip }}
+
+      - name: Publish the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ZIP: ${{ steps.names.outputs.zip }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "$ZIP" SHA256SUMS \
+            --verify-tag \
+            --title "$GITHUB_REF_NAME" \
+            --notes "Signed with package key id $KEY_ID. Verify provenance with: gh attestation verify $ZIP -R $GITHUB_REPOSITORY"
