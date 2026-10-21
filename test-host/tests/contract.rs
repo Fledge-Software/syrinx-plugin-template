@@ -3,12 +3,15 @@
 //!
 //! Run through `cargo xtask test`, which builds the package first and passes its
 //! folder in `SYRINX_PLUGIN_PACKAGE`. All data is synthetic.
+//!
+//! These tests are about Hello. When you make your own plugin, rewrite them for
+//! your commands, forms and views; keep the refusal tests, which are about the host.
 
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use plugin_format::PackageList;
 use plugin_format::package::LIST_NAME;
+use plugin_format::{Manifest, PackageList};
 use plugin_test_host::{
     BridgeError, FieldKind, HostError, MAX_MESSAGE_BYTES, Outcome, SubmitResult, TestHost,
 };
@@ -19,13 +22,22 @@ const GREET: &str = "hello.greet";
 fn package_dir() -> PathBuf {
     let dir = std::env::var_os("SYRINX_PLUGIN_PACKAGE")
         .map(PathBuf::from)
-        .unwrap_or_else(|| Path::new(env!("CARGO_MANIFEST_DIR")).join("../dist/hello-0.1.0"));
+        .unwrap_or_else(default_package_dir);
     assert!(
         dir.join(LIST_NAME).is_file(),
         "no built package at {}; run `cargo xtask test`, which builds it first",
         dir.display()
     );
     dir
+}
+
+/// dist/<id>-<version>, from the repository's manifest, where `cargo xtask build` writes.
+fn default_package_dir() -> PathBuf {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("..");
+    let text = fs::read_to_string(root.join("syrinx-plugin.toml")).expect("read manifest");
+    let manifest = Manifest::parse(&text).expect("valid manifest");
+    let name = format!("{}-{}", manifest.plugin.id, manifest.plugin.version);
+    root.join("dist").join(name)
 }
 
 fn load() -> TestHost {
@@ -238,11 +250,24 @@ fn a_granted_capability_works_and_revoking_it_denies_again() {
     host.revoke("storage");
     host.submit(GREET, "submission-2", &greeting("Bo"))
         .expect("submit call");
+    let logs = host.logs();
     assert!(
-        host.logs()
-            .iter()
-            .any(|(_, line)| line.contains("storage is not granted"))
+        logs.iter()
+            .any(|(_, line)| line.contains("storage was revoked")),
+        "after a revocation the plugin sees `revoked`, not `denied`: {logs:?}"
     );
+    assert!(
+        !logs
+            .iter()
+            .any(|(_, line)| line.contains("storage is not granted")),
+        "a revoked grant must not be reported as never granted: {logs:?}"
+    );
+
+    let refusals = logs.len();
+    host.grant("storage").expect("granting again");
+    host.submit(GREET, "submission-3", &greeting("Cy"))
+        .expect("submit call");
+    assert_eq!(host.logs().len(), refusals, "granted again: no new refusal");
 }
 
 #[test]

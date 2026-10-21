@@ -41,6 +41,8 @@ pub struct HostState {
     pub limits: StoreLimits,
     pub manifest: Manifest,
     pub granted: BTreeSet<String>,
+    /// Kinds the owner granted and then withdrew; calls answer `revoked`.
+    pub revoked: BTreeSet<String>,
     settings: BTreeMap<String, Vec<u8>>,
     pub logs: Vec<(LogLevel, String)>,
     pub views: BTreeMap<u64, ViewRecord>,
@@ -61,6 +63,7 @@ impl HostState {
             limits,
             manifest,
             granted: BTreeSet::new(),
+            revoked: BTreeSet::new(),
             settings: BTreeMap::new(),
             logs: Vec::new(),
             views: BTreeMap::new(),
@@ -72,10 +75,14 @@ impl HostState {
         }
     }
 
-    /// Fail unless the owner granted this capability.
+    /// Fail unless the owner granted this capability: `revoked` if the owner
+    /// withdrew it, `denied` if it was never granted.
     fn require(&self, kind: &str) -> Result<(), PluginError> {
         if self.granted.contains(kind) {
             return Ok(());
+        }
+        if self.revoked.contains(kind) {
+            return Err(PluginError::Revoked(kind.to_owned()));
         }
         Err(PluginError::Denied(kind.to_owned()))
     }
@@ -125,18 +132,14 @@ impl host::Host for HostState {
     }
 
     fn open_view(&mut self, kind: String, address: String) -> Result<u64, PluginError> {
-        if self.manifest.tab_type(&kind).is_none() {
+        let Some(tab) = self.manifest.tab_type(&kind) else {
             return Err(PluginError::InvalidInput(format!(
                 "tab type {kind} is not declared"
             )));
-        }
+        };
+        let title = tab.title.clone();
         let view = self.next_view;
         self.next_view += 1;
-        let title = self
-            .manifest
-            .tab_type(&kind)
-            .map(|tab| tab.title.clone())
-            .unwrap_or_default();
         self.views.insert(
             view,
             ViewRecord {

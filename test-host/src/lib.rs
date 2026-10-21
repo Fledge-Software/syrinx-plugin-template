@@ -9,6 +9,7 @@ mod bridge;
 mod checks;
 mod state;
 
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -118,7 +119,10 @@ pub struct TestHost {
     store: Store<HostState>,
     failed: bool,
     export_calls: u64,
-    pending: Vec<u64>,
+    /// Interface-chosen request ids waiting for a reply, per view.
+    pending: BTreeMap<u64, Vec<u64>>,
+    /// Views whose `views.opened` the plugin refused, with its error.
+    refused_views: Vec<(u64, PluginError)>,
     next_request: u64,
     _ticker: EpochTicker,
 }
@@ -155,7 +159,8 @@ impl TestHost {
             store,
             failed: false,
             export_calls: 0,
-            pending: Vec::new(),
+            pending: BTreeMap::new(),
+            refused_views: Vec::new(),
             next_request: 1,
             _ticker: EpochTicker::start(engine),
         })
@@ -168,13 +173,23 @@ impl TestHost {
                 "the manifest does not request {kind}"
             )));
         }
-        self.store.data_mut().granted.insert(kind.to_owned());
+        let state = self.store.data_mut();
+        state.revoked.remove(kind);
+        state.granted.insert(kind.to_owned());
         Ok(())
     }
 
-    /// The owner withdrew a grant; later calls get `denied`.
+    /// The owner withdrew a grant; later calls get `revoked`.
     pub fn revoke(&mut self, kind: &str) {
-        self.store.data_mut().granted.remove(kind);
+        let state = self.store.data_mut();
+        if state.granted.remove(kind) {
+            state.revoked.insert(kind.to_owned());
+        }
+    }
+
+    /// Views the plugin refused to open, with the error it gave.
+    pub fn refused_views(&self) -> &[(u64, PluginError)] {
+        &self.refused_views
     }
 
     pub fn package(&self) -> &PackageList {
@@ -255,7 +270,7 @@ impl TestHost {
         if self.store.data_mut().views.remove(&view).is_none() {
             return Err(HostError::Refused(format!("no open view {view}")));
         }
-        self.pending.clear();
+        self.pending.remove(&view);
         self.call(|plugin, store| plugin.syrinx_plugin_views().call_closed(store, view))
     }
 
@@ -269,7 +284,7 @@ impl TestHost {
             .ok_or_else(|| HostError::Refused(format!("no open view {view}")))?;
         record.generation += 1;
         let generation = record.generation;
-        self.pending.clear();
+        self.pending.remove(&view);
         Ok(generation)
     }
 
@@ -292,10 +307,12 @@ impl TestHost {
             method,
             json: body.to_string(),
         };
-        self.pending.push(id);
+        self.pending.entry(view).or_default().push(id);
         let reply =
             self.call(|plugin, store| plugin.syrinx_plugin_views().call_message(store, &request));
-        self.pending.retain(|pending| *pending != id);
+        if let Some(waiting) = self.pending.get_mut(&view) {
+            waiting.retain(|pending| *pending != id);
+        }
         Ok(Some(bridge::response(id, reply_body(reply?))))
     }
 
@@ -323,7 +340,7 @@ impl TestHost {
             current_generation: record.generation,
             generation,
             declared_methods: methods,
-            pending: &self.pending,
+            pending: self.pending.get(&view).map_or(&[], Vec::as_slice),
         };
         bridge::check(&sender, raw).map_err(HostError::Bridge)
     }
@@ -392,8 +409,9 @@ impl TestHost {
                     .syrinx_plugin_views()
                     .call_opened(store, view, &record.kind, &record.address)
             })?;
-            if opened.is_err() {
+            if let Err(error) = opened {
                 self.store.data_mut().views.remove(&view);
+                self.refused_views.push((view, error));
             }
         }
         Ok(())
